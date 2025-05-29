@@ -1,0 +1,14 @@
+# MQTT client
+paho-mqtt
+
+# OpenCV for image capture & processing
+opencv-python
+
+# Numerical arrays
+numpy
+
+# GPIO control on Raspberry Pi
+RPi.GPIO
+
+# Plotting for your hysteresis/totband graphs
+matplotlib

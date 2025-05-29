@@ -1,0 +1,1 @@
+# magnetic_door_sensor.py
