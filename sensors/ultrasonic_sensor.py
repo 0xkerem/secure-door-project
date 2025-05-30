@@ -4,8 +4,8 @@ Includes calibration, hysteresis, deadband, and accuracy calculations.
 """
 
 import time
-import numpy as np
 import RPi.GPIO as GPIO
+import numpy as np
 from typing import Optional, Dict
 from utils.filters import moving_average, SimpleKalmanFilter
 from utils.logger import get_logger
