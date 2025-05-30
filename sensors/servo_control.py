@@ -20,6 +20,7 @@ class ServoController:
         """
         Initializes GPIO pin and PWM for servo control.
 
+
         Args:
             pin (int): BCM GPIO pin number.
             min_duty (float): Duty cycle for 0 degrees angle.
