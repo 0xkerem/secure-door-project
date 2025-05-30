@@ -10,7 +10,6 @@ class RFIDReader:
     Handles RFID card reading with MFRC522 reader via Raspberry Pi GPIO.
 
 
-
     Attributes:
         rst_pin (int): BCM GPIO pin number for RFID reset (RST).
         authorized_uids (list): List of authorized card UIDs as strings.

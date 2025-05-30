@@ -8,7 +8,7 @@ class ServoController:
     """
     Controls a servo motor via Raspberry Pi GPIO using PWM signal.
  
- 
+
     Attributes:
         pin (int): BCM GPIO pin number connected to servo signal wire.
         min_duty (float): PWM duty cycle corresponding to 0 degrees.
