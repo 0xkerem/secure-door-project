@@ -5,6 +5,7 @@ from utils import filters
 # Define GPIO pin for PIR sensor
 PIR_PIN = 7  # Example: GPIO 4 (BCM numbering)
 
+
 def setup_pir_sensor(pin=PIR_PIN):
     """
     Sets up the GPIO pin for the PIR sensor.

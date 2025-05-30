@@ -4,6 +4,7 @@ import time
 # Define GPIO pin for magnetic door sensor
 MAGNETIC_SENSOR_PIN = 8  # Example: GPIO 18 (BCM numbering)
 
+
 def setup_magnetic_sensor(pin=MAGNETIC_SENSOR_PIN):
     """
     Sets up the GPIO pin for the magnetic door sensor.
