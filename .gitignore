@@ -175,3 +175,5 @@ cython_debug/
 
 tests
 docs
+calib_images
+test.py
