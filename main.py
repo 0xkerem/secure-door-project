@@ -1,17 +1,26 @@
-# main.py
-
 import RPi.GPIO as GPIO
 from sensors.rfid_reader import RFIDReader
 from actuators.servo_control import ServoController
 from utils import gpio_pins
 from sensors.pir_sensor import setup_pir_sensor
+from sensors.ultrasonic_sensor import UltrasonicSensor  # <-- Import the UltrasonicSensor class
 import time
 
 PIR_PIN = gpio_pins.PIR_SENSOR_PIN
 
+# Instantiate ultrasonic sensor globally so it can be used in callback
+ultrasonic_sensor = UltrasonicSensor()  # Use default pins; adjust if needed
+
 def activate_camera(channel):
     print("Camera activated due to motion detection.")
     # Add actual camera activation code here
+
+    # Get and print the distance when motion is detected
+    distance = ultrasonic_sensor.get_distance()
+    if distance is not None:
+        print(f"Distance measured: {distance:.1f} cm")
+    else:
+        print("Distance measurement failed.")
 
 def main():
     GPIO.setmode(GPIO.BCM)  # Set mode ONCE here
@@ -51,6 +60,7 @@ def main():
     finally:
         reader.cleanup()
         servo.cleanup()
+        ultrasonic_sensor.cleanup()
         GPIO.cleanup()
 
 if __name__ == "__main__":

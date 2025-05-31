@@ -1,7 +1,4 @@
-"""
-HC-SR04 Ultrasonic Sensor Module with full metrological specifications implementation.
-Includes calibration, hysteresis, deadband, and accuracy calculations.
-"""
+# sensors/ultrasonic_sensor.py
 
 import time
 import RPi.GPIO as GPIO
