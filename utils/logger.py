@@ -1,7 +1,5 @@
-# utils/logger.py
 import logging
 import sys
-from logging.handlers import RotatingFileHandler
 
 def get_logger(name: str = __name__) -> logging.Logger:
     """
@@ -27,19 +25,5 @@ def get_logger(name: str = __name__) -> logging.Logger:
     )
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
-
-    # File handler: rotating file for DEBUG level and above
-    file_handler = RotatingFileHandler(
-        filename="logs/app.log",
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8"
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)-5s] %(name)s (%(filename)s:%(lineno)d): %(message)s"
-    )
-    file_handler.setFormatter(file_formatter)
-    logger.addHandler(file_handler)
 
     return logger
