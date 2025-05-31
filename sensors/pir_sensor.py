@@ -1,10 +1,10 @@
+# sensors/pir_sensor.py
+
 import RPi.GPIO as GPIO
 import time
-from utils import filters
+from utils import gpio_pins
 
-# Define GPIO pin for PIR sensor
-PIR_PIN = 7  # Example: GPIO 4 (BCM numbering)
-
+PIR_PIN = gpio_pins.PIR_SENSOR_PIN
 
 def setup_pir_sensor(pin=PIR_PIN):
     """
@@ -13,20 +13,12 @@ def setup_pir_sensor(pin=PIR_PIN):
         pin (int): GPIO pin number to which the PIR sensor is connected.
     """
     try:
-        GPIO.setmode(GPIO.BOARD)  # Use physical pin numbering
-        GPIO.setup(pin, GPIO.IN)
+        GPIO.setup(pin, GPIO.IN)  # DO NOT setmode here!
         print(f"PIR sensor setup on GPIO pin {pin}")
     except Exception as e:
         print(f"Error setting up PIR sensor: {e}")
 
 def read_pir_sensor(pin=PIR_PIN):
-    """
-    Reads the state of the PIR sensor.
-    Args:
-        pin (int): GPIO pin number to read from.
-    Returns:
-        int: 1 if motion is detected, 0 otherwise.
-    """
     try:
         return GPIO.input(pin)
     except Exception as e:

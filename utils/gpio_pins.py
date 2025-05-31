@@ -1,8 +1,8 @@
 # utils/gpio_pins.py
 
 
-# PIR Sensor pin (GPIO7)
-PIR_SENSOR_PIN = 7
+# PIR Sensor pin (GPIO27)
+PIR_SENSOR_PIN = 27
 
 # Magnetic Door Sensor pin (GPIO8)
 MAGNETIC_DOOR_SENSOR_PIN = 8
