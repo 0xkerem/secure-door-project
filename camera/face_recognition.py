@@ -1,67 +1,95 @@
-# face_recognition.py
-from deepface import DeepFace
 import os
+import pickle
+import numpy as np
+from deepface import DeepFace
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.preprocessing import normalize
 
-# Path to the face database (images of known individuals)
-DB_PATH = r"C:\Users\meren\Desktop\Photos" # path will be updated
+# Load previously created and saved embeddings
+with open(r"C:\Users\meren\Desktop\secure-door-project\camera\faces.pkl", "rb") as f:
+    embeddings = pickle.load(f)
 
-# Face recognition model and settings
-MODEL_NAME = "VGG-Face"              
-DETECTOR_BACKEND = "opencv"          
-DISTANCE_METRIC = "cosine"           
+def get_embedding(image_path):
+    """
+    Extract and normalize the face embedding vector from an image using DeepFace.
+    
+    Parameters:
+        image_path (str): Path to the image file.
+    
+    Returns:
+        np.ndarray: Normalized embedding vector reshaped for similarity calculation.
+    """
+
+    emb = DeepFace.represent(img_path=image_path, model_name="VGG-Face")[0]["embedding"]
+    emb = normalize(np.array(emb).reshape(1, -1))[0]
+    return emb.reshape(1, -1)
+
+
+def find_best_match(new_embedding, threshold=0.4):
+    """
+    Compare a new face embedding with stored embeddings to find the best match based on cosine similarity.
+    
+    Parameters:
+        new_embedding (np.ndarray): The embedding vector of the new face (1 x N).
+        threshold (float): Similarity threshold to accept a match.
+    
+    Returns:
+        str or None: The name of the matched person if similarity >= threshold, otherwise None.
+    """
+
+    max_sim = -1
+    best_person = None
+    
+    for person_name, emb in embeddings.items():
+        sim = cosine_similarity(new_embedding, emb.reshape(1, -1))[0][0]
+        if sim > max_sim:
+            max_sim = sim
+            best_person = person_name
+    
+    if max_sim >= threshold:
+        return best_person
+    else:
+        return None
 
 
 def face_recognition(image_path):
     """
-    Perform face recognition for a single image.
+    Perform face recognition on a given image by extracting its embedding and finding the best match.
     
     Parameters:
-        image_path (str): The full path of the image to test.
+        image_path (str): Path to the test image.
     
     Returns:
-        str or None: The identified person's label if a match is found, else None.
+        str or None: The name of the matched person or None if no match is found.
     """
-    img_name = os.path.basename(image_path)
-    print(f"\n🔍 Testing image: {img_name}")
 
+    print(f"\n🔍 Checking: {os.path.basename(image_path)}")
     try:
-        result = DeepFace.find(
-            img_path=image_path,
-            db_path=DB_PATH,
-            model_name=MODEL_NAME,
-            enforce_detection=True,
-            detector_backend=DETECTOR_BACKEND,
-            distance_metric=DISTANCE_METRIC
-        )
-
-        df = result[0]
-        if df.empty:
-            message = "❌ No match found."
-            print(message)
+        new_emb = get_embedding(image_path)
+        matched_person = find_best_match(new_emb)
+        if matched_person:
+            print(f"✅ Matched person: {matched_person}")
+            return matched_person
+        else:
+            print("❌ No match found.")
             return None
-
-        # Get the best match (first row)
-        match = df.iloc[0]
-        identity_path = match.get("identity", "Unknown")
-        
-        # Extract person name from the folder name
-        person_label = os.path.basename(os.path.dirname(identity_path))
-
-        message = f"✅ Matched person: {person_label}"
-        print(message)
-        return person_label
-
     except Exception as e:
-        error_message = f"⚠️ Error occurred: {e}"
-        print(error_message)
+        print(f"⚠️ An error occurred: {e}")
         return None
 
 
-# Example usage: recognizing multiple test images
+
 if __name__ == "__main__":
-    face_recognition(r"C:\Users\meren\Desktop\Test\WIN_20250530_23_49_36_Pro.jpg")
-    face_recognition(r"C:\Users\meren\Desktop\Test\A8.jpg")
-    face_recognition(r"C:\Users\meren\Desktop\Test\WIN_20250527_16_07_08_Pro.jpg")
-    face_recognition(r"C:\Users\meren\Desktop\Test\WIN_20250527_16_09_25_Pro (2).jpg")
+    # List of new images to test face recognition on
+    new_images = [
+        r"C:\Users\meren\Desktop\Test\WIN_20250530_23_49_36_Pro.jpg",
+        r"C:\Users\meren\Desktop\Test\A8.jpg",
+        r"C:\Users\meren\Desktop\Test\WIN_20250527_16_07_08_Pro.jpg",
+        r"C:\Users\meren\Desktop\Test\WIN_20250527_16_09_25_Pro (2).jpg",
+        r"C:\Users\meren\Desktop\Test\WIN_20250527_16_03_56_Pro.jpg",
+        r"C:\Users\meren\Desktop\Test\WIN_20250527_16_04_14_Pro.jpg",
+        r"C:\Users\meren\Desktop\Test\WIN_20250527_16_09_11_Pro.jpg"
+    ]
 
-
+    for img_path in new_images:
+        face_recognition(img_path)
