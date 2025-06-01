@@ -4,7 +4,7 @@
 PIR_SENSOR_PIN = 27
 
 # Magnetic Door Sensor pin (GPIO8)
-MAGNETIC_DOOR_SENSOR_PIN = 8
+MAGNETIC_DOOR_SENSOR_PIN = 16
 
 # Servo motor control pin (GPIO17)
 SERVO_PIN = 17
