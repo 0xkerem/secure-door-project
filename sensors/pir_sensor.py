@@ -1,46 +1,47 @@
 # sensors/pir_sensor.py
 
-import RPi.GPIO as GPIO
+import pigpio
 import time
 from utils import gpio_pins
 
 PIR_PIN = gpio_pins.PIR_SENSOR_PIN
 
-def setup_pir_sensor(pin=PIR_PIN):
+def setup_pir_sensor(pi, pin=PIR_PIN):
     """
     Sets up the GPIO pin for the PIR sensor.
     Args:
+        pi (pigpio.pi): pigpio instance.
         pin (int): GPIO pin number to which the PIR sensor is connected.
     """
     try:
-        GPIO.setup(pin, GPIO.IN)  # DO NOT setmode here!
+        pi.set_mode(pin, pigpio.INPUT)
         print(f"PIR sensor setup on GPIO pin {pin}")
     except Exception as e:
         print(f"Error setting up PIR sensor: {e}")
 
-def read_pir_sensor(pin=PIR_PIN):
+def read_pir_sensor(pi, pin=PIR_PIN):
     try:
-        return GPIO.input(pin)
+        return pi.read(pin)
     except Exception as e:
         print(f"Error reading PIR sensor: {e}")
         return 0
 
-def calibrate_pir_sensor(sample_time=10):
+def calibrate_pir_sensor(pi, sample_time=10):
     """
     Calibrates the PIR sensor by reading background noise levels.
     Args:
+        pi (pigpio.pi): pigpio instance.
         sample_time (int): Time in seconds to sample the sensor.
     Returns:
         float: Average background noise level.
     """
-    setup_pir_sensor()
+    setup_pir_sensor(pi)
     print(f"Calibrating PIR sensor for {sample_time} seconds...")
     start_time = time.time()
     readings = []
     while time.time() - start_time < sample_time:
-        readings.append(read_pir_sensor())
+        readings.append(read_pir_sensor(pi))
         time.sleep(0.1)
-    #GPIO.cleanup(PIR_PIN)
     average_noise = sum(readings) / len(readings)
     print(f"PIR sensor calibration complete. Average noise level: {average_noise}")
     return average_noise
@@ -69,12 +70,16 @@ def pir_sensor_main(pin=PIR_PIN, sample_time=10, threshold=0.5):
     Returns:
         None
     """
+    pi = pigpio.pi()
+    if not pi.connected:
+        print("Could not connect to pigpio daemon! Is pigpiod running?")
+        return
     try:
-        setup_pir_sensor(pin)
-        average_noise = calibrate_pir_sensor(sample_time)
+        setup_pir_sensor(pi, pin)
+        average_noise = calibrate_pir_sensor(pi, sample_time)
         print("Monitoring PIR sensor...")
         while True:
-            motion_detected = read_pir_sensor(pin)
+            motion_detected = read_pir_sensor(pi, pin)
             totband_value = calculate_totband(motion_detected - average_noise, threshold)
 
             if totband_value != 0:
@@ -87,7 +92,7 @@ def pir_sensor_main(pin=PIR_PIN, sample_time=10, threshold=0.5):
     except KeyboardInterrupt:
         print("Exiting PIR sensor monitoring.")
     finally:
-        GPIO.cleanup(pin)  # Reset GPIO pin on exit
+        pi.stop()  # Properly disconnect pigpio
 
 if __name__ == "__main__":
     try:

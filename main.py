@@ -1,17 +1,22 @@
-import RPi.GPIO as GPIO
+import pigpio
 from sensors.rfid_reader import RFIDReader
 from actuators.servo_control import ServoController
 from utils import gpio_pins
-from sensors.pir_sensor import setup_pir_sensor
-from sensors.ultrasonic_sensor import UltrasonicSensor  # <-- Import the UltrasonicSensor class
+from sensors.pir_sensor import setup_pir_sensor, read_pir_sensor
+from sensors.ultrasonic_sensor import UltrasonicSensor
 import time
 
 PIR_PIN = gpio_pins.PIR_SENSOR_PIN
 
-# Instantiate ultrasonic sensor globally so it can be used in callback
-ultrasonic_sensor = UltrasonicSensor()  # Use default pins; adjust if needed
+# Create a shared pigpio.pi() instance for all hardware
+pi = pigpio.pi()
+if not pi.connected:
+    raise RuntimeError("Could not connect to pigpio daemon! Is pigpiod running?")
 
-def activate_camera(channel):
+# Instantiate ultrasonic sensor globally so it can be used in callback
+ultrasonic_sensor = UltrasonicSensor(pi=pi)  # Use default pins; adjust if needed
+
+def activate_camera(gpio, level, tick):
     print("Camera activated due to motion detection.")
     # Add actual camera activation code here
 
@@ -23,15 +28,14 @@ def activate_camera(channel):
         print("Distance measurement failed.")
 
 def main():
-    GPIO.setmode(GPIO.BCM)  # Set mode ONCE here
-
     authorized_uids = ["0C00201B99", "0C00203733"]
     reader = RFIDReader(serial_port="/dev/serial0", authorized_uids=authorized_uids)
     servo = ServoController(pin=gpio_pins.SERVO_PIN)
 
-    setup_pir_sensor()  # This should just do GPIO.setup(PIR_PIN, GPIO.IN)
+    setup_pir_sensor(pi, PIR_PIN)
 
-    GPIO.add_event_detect(PIR_PIN, GPIO.RISING, callback=activate_camera)
+    # Set up PIR event callback using pigpio's callback
+    pir_callback = pi.callback(PIR_PIN, pigpio.RISING_EDGE, activate_camera)
 
     print("Place your RFID card near the reader...")
 
@@ -61,7 +65,8 @@ def main():
         reader.cleanup()
         servo.cleanup()
         ultrasonic_sensor.cleanup()
-        GPIO.cleanup()
+        pir_callback.cancel()
+        pi.stop()
 
 if __name__ == "__main__":
     main()

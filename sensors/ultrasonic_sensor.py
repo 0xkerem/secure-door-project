@@ -1,7 +1,7 @@
 # sensors/ultrasonic_sensor.py
 
 import time
-import RPi.GPIO as GPIO
+import pigpio
 import numpy as np
 from typing import Optional, Dict
 from utils.filters import moving_average, SimpleKalmanFilter
@@ -31,11 +31,14 @@ class UltrasonicSensor:
     THEORETICAL_ACCURACY = 1.0  # ±1cm
     SPEED_OF_SOUND = 34300  # cm/s at 20°C
 
-    def __init__(self, 
-                 trigger_pin: int = ULTRASONIC_TRIGGER,
-                 echo_pin: int = ULTRASONIC_ECHO,
-                 deadband_threshold: float = 0.5,
-                 use_kalman: bool = True):
+    def __init__(
+        self,
+        trigger_pin: int = ULTRASONIC_TRIGGER,
+        echo_pin: int = ULTRASONIC_ECHO,
+        deadband_threshold: float = 0.5,
+        use_kalman: bool = True,
+        pi: Optional[pigpio.pi] = None
+    ):
         """
         Initialize sensor with metrological tracking.
         
@@ -44,69 +47,87 @@ class UltrasonicSensor:
             echo_pin: GPIO pin for echo
             deadband_threshold: Minimum change to register as new value (cm)
             use_kalman: Whether to use Kalman filtering
+            pi: Optional pigpio.pi instance (to allow sharing between multiple sensors)
         """
         self.trigger_pin = trigger_pin
         self.echo_pin = echo_pin
         self.deadband_threshold = deadband_threshold
         self.speed_of_sound = self.SPEED_OF_SOUND
-        self.timeout = 0.04  # 400cm max distance timeout in seconds
-        
+        # Timeout for max‐distance echo (400 cm ≃ 0.04 s)
+        self.timeout_s = 0.04  # seconds
+
         # Metrological tracking
         self.last_value: Optional[float] = None
         self.calibration_error: Optional[float] = None
         self.hysteresis_history: list[float] = []
         self.repeatability_history: list[float] = []
         self.saturation_count: int = 0
-        
+
         # Initialize filters
         self.kalman_filter = SimpleKalmanFilter() if use_kalman else None
-        
+
+        # pigpio initialization
         try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(self.trigger_pin, GPIO.OUT)
-            GPIO.setup(self.echo_pin, GPIO.IN)
-            GPIO.output(self.trigger_pin, False)
+            self.pi = pi if pi is not None else pigpio.pi()
+            if not self.pi.connected:
+                raise RuntimeError("pigpio daemon not running or can't connect.")
+            self.pi.set_mode(self.trigger_pin, pigpio.OUTPUT)
+            self.pi.set_mode(self.echo_pin, pigpio.INPUT)
+            # Ensure trigger is low to start
+            self.pi.write(self.trigger_pin, 0)
             time.sleep(0.5)  # Initial settling time
-            logger.info("Ultrasonic sensor initialized with metrological tracking")
+            logger.info("Ultrasonic sensor initialized with metrological tracking (pigpio)")
         except Exception as e:
             logger.error(f"Error initializing ultrasonic sensor: {str(e)}")
             raise
 
     def _get_raw_distance(self) -> Optional[float]:
-        """Get single raw distance measurement with range checking."""
+        """
+        Get a single raw distance measurement using pigpio's tick counters
+        for microsecond‐precision timing.
+        """
         try:
-            # Send trigger pulse
-            GPIO.output(self.trigger_pin, True)
-            time.sleep(0.00001)
-            GPIO.output(self.trigger_pin, False)
+            # Generate a 10 µs trigger pulse automatically
+            #   pigpio.gpio_trigger(pin, pulse_len, level)
+            #   → raises(trigger HIGH for pulse_len µs, then automatically goes LOW)
+            self.pi.gpio_trigger(self.trigger_pin, 10, 1)
 
-            # Wait for echo to go high
-            timeout_start = time.time()
-            while GPIO.input(self.echo_pin) == 0:
-                if time.time() - timeout_start > self.timeout:
+            # Record the timestamp for timeout calculation (microseconds)
+            start_tick = self.pi.get_current_tick()
+
+            # Wait for ECHO to go HIGH (start of pulse)
+            while self.pi.read(self.echo_pin) == 0:
+                if pigpio.tickDiff(start_tick, self.pi.get_current_tick()) > int(self.timeout_s * 1e6):
+                    # timed out waiting for echo to start
                     return None
+            rise_tick = self.pi.get_current_tick()
 
-            pulse_start = time.time()
-            
-            # Wait for echo to go low
-            while GPIO.input(self.echo_pin) == 1:
-                pulse_end = time.time()
-                if pulse_end - pulse_start > self.timeout:
+            # Wait for ECHO to go LOW (end of pulse)
+            while self.pi.read(self.echo_pin) == 1:
+                if pigpio.tickDiff(rise_tick, self.pi.get_current_tick()) > int(self.timeout_s * 1e6):
+                    # timed out waiting for echo to end
                     return None
+            fall_tick = self.pi.get_current_tick()
 
-            pulse_duration = pulse_end - pulse_start
-            distance = (pulse_duration * self.speed_of_sound) / 2
-            
-            # Check saturation at range limits
-            if distance <= self.MEASUREMENT_RANGE[0] or distance >= self.MEASUREMENT_RANGE[1]:
+            # Calculate pulse duration in microseconds
+            pulse_width_us = pigpio.tickDiff(rise_tick, fall_tick)
+
+            # Convert to seconds for distance formula
+            pulse_duration_s = pulse_width_us / 1e6
+
+            # Distance (cm) = (pulse_duration_s * speed_of_sound_cm_per_s) / 2
+            distance = (pulse_duration_s * self.speed_of_sound) / 2.0
+
+            # Check for saturation (below 2 cm or above 400 cm)
+            if distance < self.MEASUREMENT_RANGE[0] or distance > self.MEASUREMENT_RANGE[1]:
                 self.saturation_count += 1
-            
-            # Return distance if valid, else None
+
+            # Return distance if within valid range, else None
             if self.MEASUREMENT_RANGE[0] <= distance <= self.MEASUREMENT_RANGE[1]:
                 return distance
             else:
                 return None
-        
+
         except Exception as e:
             logger.error(f"Measurement error: {str(e)}")
             return None
@@ -124,45 +145,44 @@ class UltrasonicSensor:
         try:
             measurements = []
             sample_count = 1 if self.kalman_filter else num_samples
-            
+
             for _ in range(sample_count):
                 dist = self._get_raw_distance()
                 if dist is not None:
                     measurements.append(dist)
-                time.sleep(0.05)
+                time.sleep(0.25)  # small pause between raw reads
             
             if not measurements:
                 return None
-            
-            # Apply filtering
+
+            # Apply filtering: either Kalman or simple moving average
             if self.kalman_filter:
-                # Kalman filter update with mean of current samples
                 mean_val = np.mean(measurements)
                 filtered_value = self.kalman_filter.update(mean_val)
             else:
                 filtered_value = moving_average(measurements, len(measurements))
-            
-            # Deadband check: ignore minor fluctuations
+
+            # Deadband: if change is too small, keep last value
             if self.last_value is not None:
                 if abs(filtered_value - self.last_value) < self.deadband_threshold:
                     return self.last_value
-            
-            # Track hysteresis (detect direction changes)
+
+            # Track hysteresis (detect if direction changed)
             if self.last_value is not None:
                 prev_value = self._get_prev_value(2)
                 if prev_value is not None:
                     direction_change = (filtered_value - self.last_value) * (self.last_value - prev_value)
-                    if direction_change < 0:  # Direction changed
+                    if direction_change < 0:  # sign flip → hysteresis event
                         self.hysteresis_history.append(abs(filtered_value - self.last_value))
-            
-            # Track repeatability - keep last 10 measurements
+
+            # Update repeatability history (keep only last 10)
             if len(self.repeatability_history) >= 10:
                 self.repeatability_history.pop(0)
             self.repeatability_history.append(filtered_value)
-            
+
             self.last_value = filtered_value
             return filtered_value
-        
+
         except Exception as e:
             logger.error(f"Error in get_distance: {str(e)}")
             return None
@@ -192,29 +212,29 @@ class UltrasonicSensor:
 
         self.hysteresis_history.clear()
         measurements = []
-        
+
         for _ in range(num_samples):
             dist = self._get_raw_distance()
             if dist is not None:
                 measurements.append(dist)
             time.sleep(0.1)
-        
+
         if len(measurements) < num_samples / 2:
             raise RuntimeError("Insufficient valid measurements for calibration")
-        
+
         avg_measured = np.mean(measurements)
         std_dev = np.std(measurements)
-        
+
         # Adjust speed of sound based on known distance and measured average
-        # Formula: speed_of_sound_new = speed_of_sound_old * (known_distance / avg_measured)
+        # new_speed = old_speed * (known / avg_measured)
         self.speed_of_sound = self.speed_of_sound * (known_distance / avg_measured)
-        
+
         calibration_error = abs(avg_measured - known_distance)
         self.calibration_error = calibration_error
         repeatability = std_dev
         hysteresis = np.mean(self.hysteresis_history) if self.hysteresis_history else 0
         accuracy = max(self.THEORETICAL_ACCURACY, calibration_error)
-        
+
         results = {
             'calibrated_speed': self.speed_of_sound,
             'calibration_error': calibration_error,
@@ -224,7 +244,7 @@ class UltrasonicSensor:
             'deadband': self.deadband_threshold,
             'saturation_count': self.saturation_count
         }
-        
+
         logger.info(f"Calibration complete. Results: {results}")
         return results
 
@@ -238,7 +258,7 @@ class UltrasonicSensor:
         """Get current metrological performance data."""
         repeatability = np.std(self.repeatability_history) if self.repeatability_history else 0
         hysteresis = np.mean(self.hysteresis_history) if self.hysteresis_history else 0
-        
+
         return {
             'measurement_range': self.MEASUREMENT_RANGE,
             'output_range': self.MEASUREMENT_RANGE,
@@ -252,6 +272,12 @@ class UltrasonicSensor:
         }
 
     def cleanup(self):
-        """Clean up GPIO settings."""
-        GPIO.cleanup()
-        logger.info("GPIO cleanup done for ultrasonic sensor")
+        """Clean up pigpio resources (disconnect if created here)."""
+        try:
+            if hasattr(self, "pi") and self.pi is not None:
+                # Only stop the daemon if we started it here
+                if not hasattr(self, "_external_pi") or not self._external_pi:
+                    self.pi.stop()
+            logger.info("pigpio cleanup done for ultrasonic sensor")
+        except Exception as e:
+            logger.error(f"pigpio cleanup error: {str(e)}")
