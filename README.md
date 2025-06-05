@@ -8,7 +8,7 @@ The Secure Door System is designed to monitor and control physical access to a r
 
 ### Key Features
 
-* RFID Authentication using RC522
+* RFID Authentication using RDM6300
 * Face Recognition powered externally via DeepFace
 * Motion Detection via PIR sensors
 * Door Status Monitoring via magnetic sensors
