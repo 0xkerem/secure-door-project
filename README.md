@@ -23,7 +23,7 @@ The Secure Door System is designed to monitor and control physical access to a r
 secure-door-system/
 ├── actuators/                 # Servo control logic
 ├── camera/                    # Image capture and calibration
-├── secure_door_warnings/     # ESP32 project (PlatformIO)
+├── secure_door_warnings/      # ESP32 project (PlatformIO)
 ├── sensors/                   # RFID, PIR, Magnetic, Ultrasonic
 ├── utils/                     # Logging, GPIO pin mapping, filters
 ├── main.py                    # Main control logic (entry point)
