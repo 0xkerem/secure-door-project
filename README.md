@@ -37,12 +37,13 @@ secure-door-system/
 * Raspberry Pi 3B+
 * ESP32 development board
 * RFID Reader (RC522)
-* PIR Motion Sensor
+* PIR Motion Sensor (HC-SR501)
 * Magnetic Reed Switch
 * Ultrasonic Sensor (HC-SR04)
 * Servo Motor (SG90)
 * USB or Pi Camera Module
 * Power Supply, Breadboard, Jumper Wires
+* OLED screen, LED, Buzzer
 
 ## Software Stack
 
