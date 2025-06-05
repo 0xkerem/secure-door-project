@@ -8,7 +8,10 @@ opencv-python
 numpy
 
 # GPIO control on Raspberry Pi
-RPi.GPIO
+pigpio
 
-# Plotting for your hysteresis/totband graphs
+# Plotting (if used for hysteresis/totband graphs or other analysis)
 matplotlib
+
+# Face recognition library (used in camera/face_recognition.py and camera/face_embeddings.py)
+deepface
