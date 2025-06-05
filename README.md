@@ -36,7 +36,7 @@ secure-door-system/
 
 * Raspberry Pi 3B+
 * ESP32 development board
-* RFID Reader (RC522)
+* RFID Reader (RDM6300)
 * PIR Motion Sensor (HC-SR501)
 * Magnetic Reed Switch
 * Ultrasonic Sensor (HC-SR04)
