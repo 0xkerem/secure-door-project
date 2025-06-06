@@ -4,11 +4,12 @@ import base64
 import paho.mqtt.client as mqtt
 import numpy as np
 
-def send_image(broker_ip="192.168.166.195", topic="camera/image", calib_path="calibration_result.npz"):
+def send_image(broker_ip="192.168.166.195", topic="camera/image", calib_path="camera/calibration_result.npz"):
     # Load calibration data
     try:
-        with np.load(calib_path) as X:
-            mtx, dist = [X[i] for i in ('mtx', 'dist')]
+        data = np.load(calib_path)
+        cameraMatrix = data['cameraMatrix']
+        distCoeffs = data['distCoeffs']
     except Exception as e:
         print(f"Failed to load calibration data: {e}")
         return
@@ -23,7 +24,7 @@ def send_image(broker_ip="192.168.166.195", topic="camera/image", calib_path="ca
         return
 
     # Undistort the frame using calibration data
-    undistorted = cv2.undistort(frame, mtx, dist)
+    undistorted = cv2.undistort(frame, cameraMatrix, distCoeffs)
 
     # Encode the undistorted image data
     _, buffer = cv2.imencode('.jpg', undistorted)

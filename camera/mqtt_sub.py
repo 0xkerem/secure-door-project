@@ -34,7 +34,7 @@ def _on_message(client, userdata, msg):
     except Exception as e:
         print("Failed to process image:", e)
 
-def start_listening(broker_ip="localhost", topic="camera/image"):
+def start_listening(broker_ip="192.168.166.195", topic="camera/image"):
     client = mqtt.Client()
     client.on_message = _on_message
 
