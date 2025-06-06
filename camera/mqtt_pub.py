@@ -2,28 +2,39 @@
 import cv2
 import base64
 import paho.mqtt.client as mqtt
+import numpy as np
 
-def send_image(broker_ip="localhost", topic="camera/image"):
-    # Kamera aç
+def send_image(broker_ip="localhost", topic="camera/image", calib_path="camera/calibration_result.npz"):
+    # Load calibration data
+    try:
+        with np.load(calib_path) as X:
+            mtx, dist = [X[i] for i in ('mtx', 'dist')]
+    except Exception as e:
+        print(f"Failed to load calibration data: {e}")
+        return
+
+    # Open the camera
     cap = cv2.VideoCapture(0)
     ret, frame = cap.read()
     cap.release()
 
     if not ret:
-        print("Kamera görüntüsü alınamadı.")
+        print("Failed to capture image from camera.")
         return
 
-    # Encoding the image data
-    _, buffer = cv2.imencode('.jpg', frame)
+    # Undistort the frame using calibration data
+    undistorted = cv2.undistort(frame, mtx, dist)
+
+    # Encode the undistorted image data
+    _, buffer = cv2.imencode('.jpg', undistorted)
     jpg_as_text = base64.b64encode(buffer).decode()
 
-    # Establishing MQTT connection
+    # Establish MQTT connection
     client = mqtt.Client()
     client.connect(broker_ip, 1883, 60)
 
-    # Sending message
+    # Publish message
     client.publish(topic, jpg_as_text)
     client.disconnect()
 
-    print("📤 Görüntü başarıyla gönderildi.")
-
+    print("Image sent successfully (with calibration applied).")

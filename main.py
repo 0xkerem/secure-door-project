@@ -6,6 +6,7 @@ from sensors.pir_sensor import setup_pir_sensor
 from sensors.ultrasonic_sensor import UltrasonicSensor
 from sensors.magnetic_door_sensor import MagneticSensor
 from pi_sender import send_status_async
+from camera.mqtt_pub import send_image  # Make sure mqtt_pub.py is accessible/importable
 import time
 
 PIR_PIN = gpio_pins.PIR_SENSOR_PIN
@@ -22,17 +23,12 @@ magnetic_sensor = MagneticSensor(pi=pi, pin=MAGNETIC_PIN)  # Magnetic sensor ins
 
 door_open_alarm_triggered = False
 authorized_door_open = False
+last_motion_time = 0  # Track last motion detection time
 
-def activate_camera(gpio, level, tick):
-    print("Camera activated due to motion detection.")
-    # Add actual camera activation code here
-
-    # Get and print the distance when motion is detected
-    distance = ultrasonic_sensor.get_distance()
-    if distance is not None:
-        print(f"Distance measured: {distance:.1f} cm")
-    else:
-        print("Distance measurement failed.")
+def pir_motion_callback(gpio, level, tick):
+    global last_motion_time
+    print("Motion detected!")
+    last_motion_time = time.time()
 
 def monitor_magnetic_sensor():
     """
@@ -59,7 +55,7 @@ def monitor_magnetic_sensor():
         authorized_door_open = False
 
 def main():
-    global authorized_door_open
+    global authorized_door_open, last_motion_time
     authorized_uids = ["0C00201B99", "0C00203733"]
     reader = RFIDReader(serial_port="/dev/serial0", authorized_uids=authorized_uids)
     servo = ServoController(pin=gpio_pins.SERVO_PIN)
@@ -67,7 +63,7 @@ def main():
     setup_pir_sensor(pi, PIR_PIN)
 
     # Set up PIR event callback using pigpio's callback
-    pir_callback = pi.callback(PIR_PIN, pigpio.RISING_EDGE, activate_camera)
+    pir_callback = pi.callback(PIR_PIN, pigpio.RISING_EDGE, pir_motion_callback)
 
     print("Place your RFID card near the reader...")
 
@@ -75,6 +71,18 @@ def main():
         while True:
             authorized, uid = reader.read_card()
             monitor_magnetic_sensor()
+
+            # --- Check for motion & distance before sending image ---
+            current_time = time.time()
+            if (current_time - last_motion_time) <= 5:
+                distance = ultrasonic_sensor.get_distance()
+                if distance is not None and distance <= 50:
+                    print(f"Conditions met (distance={distance} cm, motion detected in last 5 seconds). Sending image.")
+                    try:
+                        send_image()  # You can specify broker_ip/topic if needed
+                    except Exception as e:
+                        print(f"Failed to send image: {e}")
+                    last_motion_time = 0  # Reset so it doesn't trigger repeatedly
 
             if uid:
                 print(f"Card UID: {uid} - {'AUTHORIZED' if authorized else 'UNAUTHORIZED'}")
