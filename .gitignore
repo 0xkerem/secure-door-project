@@ -177,3 +177,4 @@ tests
 docs
 calib_images
 test.py
+camera/test_images
