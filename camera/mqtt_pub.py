@@ -4,7 +4,7 @@ import base64
 import paho.mqtt.client as mqtt
 import numpy as np
 
-def send_image(broker_ip="localhost", topic="camera/image", calib_path="camera/calibration_result.npz"):
+def send_image(broker_ip="192.168.166.195", topic="camera/image", calib_path="calibration_result.npz"):
     # Load calibration data
     try:
         with np.load(calib_path) as X:

@@ -12,6 +12,8 @@ from sensors.magnetic_door_sensor import MagneticSensor
 from pi_sender import send_status_async
 from camera.mqtt_pub import send_image  # Make sure mqtt_pub.py is accessible/importable
 
+import paho.mqtt.client as mqtt
+
 PIR_PIN = gpio_pins.PIR_SENSOR_PIN
 MAGNETIC_PIN = gpio_pins.MAGNETIC_DOOR_SENSOR_PIN
 
@@ -31,13 +33,29 @@ last_motion_time = 0  # Track last motion detection time
 shutdown_event = threading.Event()
 rfid_queue = Queue()
 
+# --- Face recognition MQTT result handling ---
+face_result_queue = Queue()
+
+def on_face_result(client, userdata, msg):
+    result = msg.payload.decode()
+    print(f"[MQTT] Received face recognition result: {result}")
+    face_result_queue.put(result)
+
+def start_face_result_listener(broker_ip="192.168.166.195", topic="camera/result"):
+    client = mqtt.Client()
+    client.on_message = on_face_result
+    client.connect(broker_ip, 1883, 60)
+    client.subscribe(topic)
+    client.loop_start()  # Run MQTT loop in background thread
+    return client
+
+# --- End face recognition MQTT section ---
 
 def pir_motion_callback(gpio, level, tick):
     """Called by pigpio when PIR sensor goes high."""
     global last_motion_time
     # Update the timestamp for the most recent motion
     last_motion_time = time.time()
-
 
 def monitor_magnetic_sensor():
     """
@@ -63,7 +81,6 @@ def monitor_magnetic_sensor():
         door_open_alarm_triggered = False
         authorized_door_open = False
 
-
 def rfid_reader_thread(reader: RFIDReader, queue: Queue, stop_event: threading.Event):
     """
     Worker thread that continuously attempts to read an RFID card (with a short timeout).
@@ -71,11 +88,10 @@ def rfid_reader_thread(reader: RFIDReader, queue: Queue, stop_event: threading.E
     """
     while not stop_event.is_set():
         # Attempt to read a card, waiting at most 0.5 seconds each call
-        authorized, uid = reader.read_card(timeout=0.5)
+        authorized, uid = reader.read_card()
         if uid:
             queue.put((authorized, uid))
         # Loop again immediately (reader.read_card will block up to timeout)
-
 
 def main():
     global authorized_door_open, last_motion_time
@@ -97,11 +113,14 @@ def main():
     )
     rfid_thread.start()
 
+    # 4) Start listening for face recognition results
+    face_result_mqtt_client = start_face_result_listener(broker_ip="192.168.166.195")  # Change if broker is not local
+
     print("System initialized. Waiting for activity...")
 
     try:
         while True:
-            # 4) --------------- Process RFID events (if any) ---------------
+            # --------------- Process RFID events (if any) ---------------
             try:
                 # Wait up to 0.1 seconds for a new card read
                 authorized, uid = rfid_queue.get(timeout=0.1)
@@ -129,7 +148,7 @@ def main():
                     # We keep polling the reader in short intervals:
                     while True:
                         # Attempt a quick read; if no UID returned, assume card removed
-                        _, current_uid = reader.read_card(timeout=0.5)
+                        _, current_uid = reader.read_card()
                         monitor_magnetic_sensor()  # keep checking door while waiting
                         if not current_uid:
                             break
@@ -145,10 +164,10 @@ def main():
                 # Small delay so we don’t immediately re‐process the same card
                 time.sleep(0.5)
 
-            # 5) --------------- Monitor magnetic sensor ---------------
+            # --------------- Monitor magnetic sensor ---------------
             monitor_magnetic_sensor()
 
-            # 6) --------------- PIR + Ultrasonic “Send Image” logic ---------------
+            # --------------- PIR + Ultrasonic “Send Image” logic ---------------
             current_time = time.time()
             if (current_time - last_motion_time) <= 5:
                 distance = ultrasonic_sensor.get_distance()
@@ -156,12 +175,25 @@ def main():
                     print(f"Conditions met (distance={distance} cm, motion detected in last 5 seconds). Sending image.")
                     try:
                         send_image()
+                        print("Waiting for face recognition result...")
+                        try:
+                            # Wait up to 5 seconds for result from broker/PC
+                            result = face_result_queue.get(timeout=5)
+                            if result != "unknown":
+                                print("Face recognized! Activating servo.")
+                                servo.set_angle(180)
+                                time.sleep(2)
+                                servo.set_angle(0)
+                            else:
+                                print("No face match detected.")
+                        except Empty:
+                            print("No result received from face recognition in time.")
                     except Exception as e:
                         print(f"Failed to send image: {e}")
                     # Reset so we don’t retrigger continuously
                     last_motion_time = 0
 
-            # 7) Short sleep to avoid a tight busy‐loop
+            # --------------- Short sleep to avoid a tight busy‐loop ---------------
             time.sleep(0.1)
 
     except KeyboardInterrupt:
@@ -179,6 +211,9 @@ def main():
         pir_callback.cancel()
         pi.stop()
 
+        # Cleanup MQTT face result listener
+        face_result_mqtt_client.loop_stop()
+        face_result_mqtt_client.disconnect()
 
 if __name__ == "__main__":
     main()

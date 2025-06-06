@@ -31,6 +31,11 @@ bool authorizedBeep = false;
 unsigned long beepStart = 0;
 int beepState = 0; // 0=idle, 1=first beep, 2=gap, 3=second beep, 4=done
 
+// ---- STATIC IP CONFIGURATION ----
+IPAddress local_IP(192, 168, 166, 100);     // <-- Set this to your desired static IP
+IPAddress gateway(192, 168, 166, 1);        // <-- Usually your router's IP
+IPAddress subnet(255, 255, 255, 0);         // <-- Your subnet mask
+
 // Forward-declare handlers:
 void triggerUnauthorizedCard();
 void triggerAuthorizedCard();
@@ -47,6 +52,12 @@ void setup() {
   digitalWrite(BUZZER_PIN, LOW);
 
   WiFi.mode(WIFI_STA);
+
+  // ---- STATIC IP CONFIG (add this block before WiFi.begin) ----
+  if (!WiFi.config(local_IP, gateway, subnet)) {
+    Serial.println("STA Failed to configure");
+  }
+
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting to Wi-Fi");
   while (WiFi.status() != WL_CONNECTED) {

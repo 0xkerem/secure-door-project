@@ -2,7 +2,7 @@ import socket
 import threading
 
 # ==== UPDATE THIS to match your ESP32’s IP on the same WiFi ====
-ESP32_IP   = "192.168.1.108"
+ESP32_IP   = "192.168.166.100"
 ESP32_PORT = 5000
 
 VALID_CODES = ("AUTHORIZED_CARD", "UNAUTHORIZED_CARD", "PHYSICAL_ALARM")
