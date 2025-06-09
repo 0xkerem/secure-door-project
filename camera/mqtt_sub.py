@@ -54,4 +54,4 @@ def stop_listening(client):
     client.disconnect()
     
 if __name__ == "__main__":
-    start_listening(broker_ip="localhost", topic="camera/image")
+    start_listening(broker_ip="192.168.166.195", topic="camera/image")

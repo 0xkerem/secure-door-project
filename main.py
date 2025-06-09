@@ -10,7 +10,7 @@ from sensors.pir_sensor import setup_pir_sensor
 from sensors.ultrasonic_sensor import UltrasonicSensor
 from sensors.magnetic_door_sensor import MagneticSensor
 from pi_sender import send_status_async
-from camera.mqtt_pub import send_image  # Make sure mqtt_pub.py is accessible/importable
+from camera.mqtt_pub import send_image
 
 import paho.mqtt.client as mqtt
 
@@ -32,6 +32,10 @@ authorized_door_open = False
 last_motion_time = 0  # Track last motion detection time
 shutdown_event = threading.Event()
 rfid_queue = Queue()
+
+# --- NEW: Track time of last authorized door open and allowed open interval
+last_authorized_open_time = 0
+AUTHORIZED_DOOR_OPEN_INTERVAL = 5  # seconds, adjust as needed
 
 # --- Face recognition MQTT result handling ---
 face_result_queue = Queue()
@@ -57,29 +61,37 @@ def pir_motion_callback(gpio, level, tick):
     # Update the timestamp for the most recent motion
     last_motion_time = time.time()
 
-def monitor_magnetic_sensor():
-    """
-    Checks if the door is open without authorized access.
-    If triggered, sends PHYSICAL_ALARM asynchronously.
-    Should be called frequently (e.g., in a loop or separate thread).
-    """
+def alarm_monitor_thread(stop_event):
     global door_open_alarm_triggered, authorized_door_open
+    global last_authorized_open_time
 
-    door_state = magnetic_sensor.read()  # 1 = closed, 0 = open
+    while not stop_event.is_set():
+        door_state = magnetic_sensor.read()  # 1 = closed, 0 = open
+        current_time = time.time()
 
-    if door_state == 0 and not authorized_door_open:
-        if not door_open_alarm_triggered:
-            print("ALARM: Door opened WITHOUT authorization!")
-            try:
-                send_status_async("PHYSICAL_ALARM")
-            except Exception as e:
-                print(f"Failed to send PHYSICAL_ALARM status: {e}")
-            door_open_alarm_triggered = True
+        # If the door is open and NOT within the authorized open window, trigger the alarm
+        if door_state == 0:
+            # Check if the door was opened legally (recent authorized open)
+            if not authorized_door_open:
+                # If not currently in authorized door open interval, trigger alarm
+                if (current_time - last_authorized_open_time) > AUTHORIZED_DOOR_OPEN_INTERVAL:
+                    if not door_open_alarm_triggered:
+                        print("ALARM: Door opened WITHOUT authorization!")
+                        try:
+                            send_status_async("PHYSICAL_ALARM")
+                        except Exception as e:
+                            print(f"Failed to send PHYSICAL_ALARM status: {e}")
+                        door_open_alarm_triggered = True
+            else:
+                # Door is open and authorized, do not trigger alarm
+                pass
+        elif door_state == 1:
+            # Door closed: reset the flags
+            door_open_alarm_triggered = False
+            authorized_door_open = False
 
-    elif door_state == 1:
-        # Door closed: reset both flags
-        door_open_alarm_triggered = False
-        authorized_door_open = False
+        # Sleep to avoid busy-waiting
+        time.sleep(0.1)
 
 def rfid_reader_thread(reader: RFIDReader, queue: Queue, stop_event: threading.Event):
     """
@@ -93,8 +105,54 @@ def rfid_reader_thread(reader: RFIDReader, queue: Queue, stop_event: threading.E
             queue.put((authorized, uid))
         # Loop again immediately (reader.read_card will block up to timeout)
 
+def process_rfid_events(reader, servo):
+    """
+    Process RFID events from the rfid_queue.
+    """
+    global authorized_door_open, door_open_alarm_triggered
+    global last_authorized_open_time
+
+    try:
+        authorized, uid = rfid_queue.get_nowait()
+    except Empty:
+        return
+
+    if uid:
+        print(f"Card UID: {uid} - {'AUTHORIZED' if authorized else 'UNAUTHORIZED'}")
+
+        if authorized:
+            print("Access granted - Opening door.")
+            try:
+                send_status_async("AUTHORIZED_CARD")
+            except Exception as e:
+                print(f"Failed to send AUTHORIZED_CARD status: {e}")
+
+            authorized_door_open = True
+            last_authorized_open_time = time.time()  # Record time for legal open
+            servo.set_angle(180)
+            time.sleep(2)
+            servo.set_angle(0)
+            print("Please remove the card...")
+
+            # Wait until the card is removed
+            while True:
+                _, current_uid = reader.read_card()
+                if not current_uid:
+                    break
+                time.sleep(0.1)
+
+        else:
+            print("Access denied!")
+            try:
+                send_status_async("UNAUTHORIZED_CARD")
+            except Exception as e:
+                print(f"Failed to send UNAUTHORIZED_CARD status: {e}")
+
+        # Small delay to avoid re-processing the same card
+        time.sleep(0.5)
+
 def main():
-    global authorized_door_open, last_motion_time
+    global authorized_door_open, last_motion_time, last_authorized_open_time
 
     # 1) Instantiate hardware interfaces
     authorized_uids = ["0C00201B99", "0C00203733"]
@@ -113,61 +171,25 @@ def main():
     )
     rfid_thread.start()
 
-    # 4) Start listening for face recognition results
+    # 4) Start alarm monitor thread
+    alarm_thread = threading.Thread(
+        target=alarm_monitor_thread,
+        args=(shutdown_event,),
+        daemon=True
+    )
+    alarm_thread.start()
+
+    # 5) Start listening for face recognition results
     face_result_mqtt_client = start_face_result_listener(broker_ip="192.168.166.195")  # Change if broker is not local
 
     print("System initialized. Waiting for activity...")
 
     try:
         while True:
-            # --------------- Process RFID events (if any) ---------------
-            try:
-                # Wait up to 0.1 seconds for a new card read
-                authorized, uid = rfid_queue.get(timeout=0.1)
-            except Empty:
-                authorized = False
-                uid = None
+            # --- Process RFID events (if any) ---
+            process_rfid_events(reader, servo)
 
-            if uid:
-                print(f"Card UID: {uid} - {'AUTHORIZED' if authorized else 'UNAUTHORIZED'}")
-
-                if authorized:
-                    print("Access granted - Opening door.")
-                    try:
-                        send_status_async("AUTHORIZED_CARD")
-                    except Exception as e:
-                        print(f"Failed to send AUTHORIZED_CARD status: {e}")
-
-                    authorized_door_open = True
-                    servo.set_angle(180)
-                    time.sleep(2)
-                    servo.set_angle(0)
-                    print("Please remove the card...")
-
-                    # Wait until the card is removed
-                    # We keep polling the reader in short intervals:
-                    while True:
-                        # Attempt a quick read; if no UID returned, assume card removed
-                        _, current_uid = reader.read_card()
-                        monitor_magnetic_sensor()  # keep checking door while waiting
-                        if not current_uid:
-                            break
-                        time.sleep(0.1)
-
-                else:
-                    print("Access denied!")
-                    try:
-                        send_status_async("UNAUTHORIZED_CARD")
-                    except Exception as e:
-                        print(f"Failed to send UNAUTHORIZED_CARD status: {e}")
-
-                # Small delay so we don’t immediately re‐process the same card
-                time.sleep(0.5)
-
-            # --------------- Monitor magnetic sensor ---------------
-            monitor_magnetic_sensor()
-
-            # --------------- PIR + Ultrasonic “Send Image” logic ---------------
+            # --- PIR + Ultrasonic “Send Image” logic ---
             current_time = time.time()
             if (current_time - last_motion_time) <= 5:
                 distance = ultrasonic_sensor.get_distance()
@@ -176,24 +198,40 @@ def main():
                     try:
                         send_image()
                         print("Waiting for face recognition result...")
-                        try:
-                            # Wait up to 5 seconds for result from broker/PC
-                            result = face_result_queue.get(timeout=5)
-                            if result != "unknown":
-                                print("Face recognized! Activating servo.")
-                                servo.set_angle(180)
-                                time.sleep(2)
-                                servo.set_angle(0)
-                            else:
-                                print("No face match detected.")
-                        except Empty:
+
+                        # Poll for MQTT face result for up to 5s
+                        wait_start = time.time()
+                        result = None
+                        while (time.time() - wait_start) < 5:
+                            try:
+                                result = face_result_queue.get(timeout=0.1)
+                                break
+                            except Empty:
+                                # Continue polling RFID events
+                                process_rfid_events(reader, servo)
+
+                        if result is not None and result != "unknown":
+                            print("Face recognized! Activating servo.")
+                            authorized_door_open = True
+                            last_authorized_open_time = time.time()  # Record time for legal open
+                            try:
+                                send_status_async("AUTHORIZED_CARD")
+                            except Exception as e:
+                                print(f"Failed to send AUTHORIZED_CARD status: {e}")
+                            servo.set_angle(180)
+                            time.sleep(2)
+                            servo.set_angle(0)
+                        elif result == "unknown":
+                            print("No face match detected.")
+                        else:
                             print("No result received from face recognition in time.")
                     except Exception as e:
                         print(f"Failed to send image: {e}")
-                    # Reset so we don’t retrigger continuously
+
+                    # Reset to avoid continuous retriggering
                     last_motion_time = 0
 
-            # --------------- Short sleep to avoid a tight busy‐loop ---------------
+            # --- Short sleep to avoid a tight busy-loop ---
             time.sleep(0.1)
 
     except KeyboardInterrupt:
@@ -203,6 +241,7 @@ def main():
         # Signal threads to stop
         shutdown_event.set()
         rfid_thread.join(timeout=1.0)
+        alarm_thread.join(timeout=1.0)
 
         # Cleanup hardware
         reader.cleanup()
