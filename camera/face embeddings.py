@@ -8,7 +8,7 @@ import pickle
 print("Working directory:", os.getcwd())
 
 embeddings = {}
-photos_dir = r"C:\Users\meren\Desktop\Photos"
+photos_dir = # relative path
 
 for person_name in os.listdir(photos_dir):
     person_folder = os.path.join(photos_dir, person_name)
