@@ -2,6 +2,7 @@ import pigpio
 import threading
 import time
 from queue import Queue, Empty
+from concurrent.futures import ThreadPoolExecutor
 
 from sensors.rfid_reader import RFIDReader
 from actuators.servo_control import ServoController
@@ -44,8 +45,15 @@ last_face_recognition_success = 0
 AUTHORIZED_DOOR_OPEN_INTERVAL = 5  # seconds, adjust as needed
 FACE_RECOGNITION_COOLDOWN = 10  # seconds after successful face recognition
 
-# --- Face recognition MQTT result handling ---
+# --- Face recognition state tracking ---
 face_result_queue = Queue()
+face_recognition_pending = False
+face_recognition_start_time = 0
+FACE_RECOGNITION_TIMEOUT = 5  # seconds
+
+# --- Thread pool for async image operations ---
+image_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ImageWorker")
+active_image_futures = set()  # Track active image capture tasks
 
 def on_face_result(client, userdata, msg):
     result = msg.payload.decode()
@@ -217,50 +225,94 @@ def check_motion_and_distance():
     
     return False
 
-def handle_face_recognition(servo):
-    """Handle face recognition process."""
-    global authorized_door_open, last_authorized_open_time, last_face_recognition_success
+def async_send_image():
+    """Async wrapper for send_image - runs in thread pool."""
+    try:
+        print("[FACE] Starting async image capture...")
+        send_image(use_test_image=False)
+        print("[FACE] Image sent successfully")
+        return True
+    except Exception as e:
+        print(f"[FACE] Failed to send image: {e}")
+        return False
+
+def start_face_recognition():
+    """Start face recognition process (completely non-blocking)."""
+    global face_recognition_pending, face_recognition_start_time, active_image_futures
+    
+    # Clean up any completed futures
+    active_image_futures = {f for f in active_image_futures if not f.done()}
+    
+    # Limit concurrent image operations to prevent resource exhaustion
+    if len(active_image_futures) >= 2:
+        print("[FACE] Too many concurrent image operations, skipping...")
+        return False
     
     try:
-        send_image(use_test_image=False)
-        print("[FACE] Image sent, waiting for recognition result...")
-
-        # Poll for MQTT face result for up to 5s, but don't block other operations
-        wait_start = time.time()
-        result = None
+        # Submit image capture to thread pool
+        future = image_executor.submit(async_send_image)
+        active_image_futures.add(future)
         
-        while (time.time() - wait_start) < 5:
-            try:
-                result = face_result_queue.get(timeout=0.1)
-                break
-            except Empty:
-                # Continue processing other events while waiting
-                pass
-
-        if result is not None:
-            if result != "unknown":
-                # Face recognized - open door
-                print(f"[FACE] Face recognized: {result}! Activating servo.")
-                authorized_door_open = True
-                last_authorized_open_time = time.time()  # Record time for legal open
-                last_face_recognition_success = time.time()  # Record successful face recognition
-                try:
-                    send_status_async("AUTHORIZED_CARD")
-                except Exception as e:
-                    print(f"Failed to send AUTHORIZED_CARD status: {e}")
-                servo.set_angle(180)
-                time.sleep(2)
-                servo.set_angle(0)
-                return True
-            else:
-                print("[FACE] No face match detected (unknown).")
-        else:
-            print("[FACE] No result received from face recognition in time.")
-            
+        face_recognition_pending = True
+        face_recognition_start_time = time.time()
+        print("[FACE] Image capture started asynchronously...")
+        return True
     except Exception as e:
-        print(f"[FACE] Failed to process face recognition: {e}")
+        print(f"[FACE] Failed to start async image capture: {e}")
+        return False
+
+def check_face_recognition_result(servo):
+    """Check for face recognition result (non-blocking)."""
+    global face_recognition_pending, authorized_door_open, last_authorized_open_time, last_face_recognition_success, active_image_futures
     
-    return False
+    if not face_recognition_pending:
+        return False
+    
+    current_time = time.time()
+    
+    # Clean up any completed image futures
+    completed_futures = {f for f in active_image_futures if f.done()}
+    for future in completed_futures:
+        try:
+            result = future.result()  # Get result and handle any exceptions
+            if not result:
+                print("[FACE] Image capture failed")
+        except Exception as e:
+            print(f"[FACE] Image capture exception: {e}")
+    active_image_futures -= completed_futures
+    
+    # Check for timeout
+    if (current_time - face_recognition_start_time) > FACE_RECOGNITION_TIMEOUT:
+        print("[FACE] Face recognition timed out.")
+        face_recognition_pending = False
+        return False
+    
+    # Check for result
+    try:
+        result = face_result_queue.get_nowait()
+        face_recognition_pending = False
+        
+        if result != "unknown":
+            # Face recognized - open door
+            print(f"[FACE] Face recognized: {result}! Activating servo.")
+            authorized_door_open = True
+            last_authorized_open_time = time.time()  # Record time for legal open
+            last_face_recognition_success = time.time()  # Record successful face recognition
+            try:
+                send_status_async("AUTHORIZED_CARD")
+            except Exception as e:
+                print(f"Failed to send AUTHORIZED_CARD status: {e}")
+            servo.set_angle(180)
+            time.sleep(2)
+            servo.set_angle(0)
+            return True
+        else:
+            print("[FACE] No face match detected (unknown).")
+            return False
+            
+    except Empty:
+        # No result yet, keep waiting
+        return False
 
 def main():
     global authorized_door_open, last_motion_time, last_authorized_open_time, last_face_recognition_success
@@ -309,33 +361,33 @@ def main():
 
     try:
         while True:
-            # --- Process RFID events (if any) ---
-            process_rfid_events(reader, servo)
-
-            # --- PIR + Ultrasonic "Send Image" logic ---
             current_time = time.time()
             
-            # Check conditions and cooldown (including face recognition cooldown)
-            if ((current_time - last_image_attempt) > IMAGE_COOLDOWN and 
+            # --- Process RFID events (HIGHEST PRIORITY - always check first) ---
+            process_rfid_events(reader, servo)
+            
+            # --- Check face recognition result (non-blocking) ---
+            check_face_recognition_result(servo)
+
+            # --- PIR + Ultrasonic "Send Image" logic ---
+            # Only start new face recognition if not already pending
+            if (not face_recognition_pending and 
+                (current_time - last_image_attempt) > IMAGE_COOLDOWN and 
                 (current_time - last_face_recognition_success) > FACE_RECOGNITION_COOLDOWN):
                 
                 if check_motion_and_distance():
                     last_image_attempt = current_time
-                    
-                    # Handle face recognition in a non-blocking way
-                    if handle_face_recognition(servo):
-                        # Face was recognized and door opened
-                        pass
+                    start_face_recognition()
 
             # --- Periodic status output (every 30 seconds) ---
             if int(current_time) % 30 == 0:
                 with motion_lock:
                     time_since_motion = current_time - last_motion_time if last_motion_time > 0 else float('inf')
-                print(f"[STATUS] Motion count: {motion_count}, Last motion: {time_since_motion:.1f}s ago")
+                print(f"[STATUS] Motion count: {motion_count}, Last motion: {time_since_motion:.1f}s ago, Face pending: {face_recognition_pending}, Active images: {len(active_image_futures)}")
                 time.sleep(1)  # Avoid multiple prints in the same second
 
-            # --- Short sleep to avoid a tight busy-loop ---
-            time.sleep(0.1)
+            # --- Very short sleep to keep loop responsive ---
+            time.sleep(0.05)  # Reduced from 0.1 to 0.05 for better responsiveness
 
     except KeyboardInterrupt:
         print("\nShutting down gracefully...")
@@ -364,6 +416,13 @@ def main():
             face_result_mqtt_client.disconnect()
         except Exception as e:
             print(f"Error disconnecting MQTT: {e}")
+
+        # Cleanup thread pool
+        try:
+            print("Shutting down image thread pool...")
+            image_executor.shutdown(wait=True, timeout=5.0)
+        except Exception as e:
+            print(f"Error shutting down thread pool: {e}")
 
 if __name__ == "__main__":
     main()
